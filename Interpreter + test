@@ -116,14 +116,28 @@ let rec eval (e:exp) (env: evT env) =
   | Or(e1, e2) -> bool_or ((eval e1 env), (eval e2 env))
   | Not(e1) -> bool_not(eval e1 env)
 
-  | Ifthenelse(cond,e1,e2) -> 
-    (let g = eval cond env in 
-      match (typecheck("bool", g), g) with 
-        | (true, Bool(true,Untainted)) -> eval e1 env
-        | (true, Bool(false,Untainted)) -> eval e2 env
-        | (true, Bool(_,Tainted)) -> failwith("Illegal Flow")
-        | (_, _) -> failwith ("nonboolean guard") : evT)
-  
+  | Ifthenelse(cond, e1, e2) ->
+    let g = eval cond env in
+    (match (typecheck("bool", g), g) with
+    | (true, Bool(true, taint_status)) -> 
+        let result = eval e1 env in
+        (match result with
+         | Int(value, _) -> Int(value, taint_status)
+         | Bool(value, _) -> Bool(value, taint_status)
+         | Funval(arg,ebody,_) -> Funval(arg,ebody,taint_status)
+         | Unbound -> Unbound
+         ) (* Ajouter d'autres cas au besoin *)
+
+    | (true, Bool(false, taint_status)) -> 
+        let result = eval e2 env in
+        (match result with
+         | Int(value, _) -> Int(value, taint_status)
+         | Bool(value, _) -> Bool(value, taint_status)
+         | Funval(arg,ebody,_) -> Funval(arg,ebody,taint_status)
+         | Unbound -> Unbound       
+        )
+    | (_, _) -> failwith("nonboolean guard"));
+
   | Let(i, e, ebody) -> eval ebody (bind env i (eval e env))
 
   | Fun(arg, ebody, t) -> Funval(arg,ebody,t) 
