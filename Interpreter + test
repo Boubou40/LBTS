@@ -1,0 +1,182 @@
+type taintness =
+  | Tainted
+  | Untainted
+
+type ide = string 
+
+type exp = 
+  | CstInt of int 
+  | CstTrue 
+  | CstFalse 
+  | Times of exp * exp
+  | Sum of exp * exp
+  | Sub of exp * exp
+  | Eq of exp * exp
+  | Iszero of exp
+  | Or of exp * exp
+  | And of exp * exp
+  | Not of exp
+  | Den of ide * taintness
+  | Ifthenelse of exp * exp * exp
+  | Let of ide * exp * exp
+  | Fun of ide * exp * taintness 
+  | Apply of exp * exp 
+
+type evT = Int of int * taintness
+  | Bool of bool * taintness
+  | Unbound
+  | Funval of efun and efun = ide * exp * taintness
+
+type 'a env = (string * 'a) list
+
+
+
+
+let typecheck (t, typeDescriptor) = 
+  match t with 
+  | "int" -> 
+  (match typeDescriptor with
+  | Int(u,_) -> true
+  | _ -> false) 
+  | "bool" ->
+  (match typeDescriptor with 
+  | Bool(u,_) -> true
+  | _ -> false) 
+  | _ -> failwith ("not a valid type");;
+
+
+let bind env (x:string) (v:evT) = (x,v)::env;;
+
+
+let rec lookup env x =
+  match env with 
+  | [] -> failwith ("not found")
+  | (y, v)::r -> if x = y then v else lookup r x;;
+
+
+  (* Expression definition*)
+
+let is_zero x = match (typecheck("int",x), x) with 
+| (true, Int(y,Tainted)) -> Bool(y=0,Tainted) 
+| (true, Int(y,Untainted)) -> Bool(y=0,Untainted)
+| (_, _) -> failwith("run-time error");; 
+
+
+let int_eq(x,y) = 
+match (typecheck("int",x), typecheck("int",y), x, y) with 
+| (true, true, Int(v,t1), Int(w,t2)) -> Bool(v = w, if t1 == Tainted || t2 == Tainted then Tainted else Untainted) 
+| (_,_,_,_) -> failwith("run-time error ");; 
+
+let int_plus(x, y) =
+match(typecheck("int",x), typecheck("int",y), x, y) with 
+| (true, true, Int(v,t1), Int(w,t2)) -> Int(v + w, if t1 == Tainted || t2 == Tainted then Tainted else Untainted) 
+| (_,_,_,_) -> failwith("run-time error ");;
+
+let int_sub(x, y) =
+match(typecheck("int",x), typecheck("int",y), x, y) with 
+| (true, true, Int(v,t1), Int(w,t2)) -> Int(v - w, if t1 == Tainted || t2 == Tainted then Tainted else Untainted) 
+| (_,_,_,_) -> failwith("run-time error ");;
+
+
+let int_times(x, y) =
+match(typecheck("int",x), typecheck("int",y), x, y) with 
+| (true, true, Int(v,t1), Int(w,t2)) -> Int(v * w, if t1 == Tainted || t2 == Tainted then Tainted else Untainted) 
+| (_,_,_,_) -> failwith("run-time error ");;
+
+
+let bool_and(b1,b2) = 
+  match (typecheck("bool",b1), typecheck("bool",b2), b1, b2) with
+  | (true, true, Bool(v1,t1), Bool(v2,t2)) -> Bool(v1 && v2,  if t1 == Tainted || t2 == Tainted then Tainted else Untainted)
+  | (_,_,_,_) -> failwith("run-time error ");;
+
+let bool_or(b1,b2) = 
+  match (typecheck("bool",b1), typecheck("bool",b2), b1, b2) with
+  | (true, true, Bool(v1,t1), Bool(v2,t2)) -> Bool(v1 || v2, if t1 == Tainted || t2 == Tainted then Tainted else Untainted)
+  | (_,_,_,_) -> failwith("run-time error ");;
+
+let bool_not b1 = 
+  match (typecheck("bool",b1), b1) with
+  | (true, Bool(true,t)) -> Bool(false,t)
+  | (true, Bool(false,t)) -> Bool(true,t)
+  | (_,_) -> failwith("run-time error ");;
+   
+  
+let rec eval (e:exp) (env: evT env) = 
+  match e with
+  | Den (x,t) -> lookup env x
+  | CstInt(n) -> Int(n,Untainted) 
+  | CstTrue -> Bool(true,Untainted) 
+  | CstFalse -> Bool(false,Untainted)
+  | Iszero(e1) -> is_zero(eval e1 env)
+  | Eq(e1, e2) -> int_eq((eval e1 env), (eval e2 env))
+  | Times(e1,e2) -> int_times((eval e1 env), (eval e2 env))
+  | Sum(e1, e2) -> int_plus ((eval e1 env), (eval e2 env))
+  | Sub(e1, e2) -> int_sub ((eval e1 env), (eval e2 env))
+  | And(e1, e2) -> bool_and((eval e1 env), (eval e2 env))
+  | Or(e1, e2) -> bool_or ((eval e1 env), (eval e2 env))
+  | Not(e1) -> bool_not(eval e1 env)
+
+  | Ifthenelse(cond,e1,e2) -> 
+    (let g = eval cond env in 
+      match (typecheck("bool", g), g) with 
+        | (true, Bool(true,Untainted)) -> eval e1 env
+        | (true, Bool(false,Untainted)) -> eval e2 env
+        | (true, Bool(_,Tainted)) -> failwith("Illegal Flow")
+        | (_, _) -> failwith ("nonboolean guard") : evT)
+  
+  | Let(i, e, ebody) -> eval ebody (bind env i (eval e env))
+
+  | Fun(arg, ebody, t) -> Funval(arg,ebody,t) 
+
+  | Apply(Den(f,t), eArg) -> 
+    let fval = lookup env f in 
+      (match fval with 
+      | Funval(arg, fbody,t) ->
+        let aVal = eval eArg env in
+        let aenv = bind env arg aVal in 
+          eval fbody aenv
+      | _ -> failwith("non functional value"))
+  | Apply(_,_) -> failwith("Application: not first order function") 
+  
+
+
+    
+
+
+(* A simple environment for testing *)
+let initial_env : evT env = []
+
+(* Helper function to add bindings to the environment *)
+let extend_env env (x, v) = bind env x v
+
+(* Tests for taint propagation *)
+let test_taint_propagation () =
+  let env = initial_env in
+
+  (* Test tainting through arithmetic operations *)
+  let taint_env = extend_env env ("x", Int(5, Tainted)) in
+  let expr1 = Sum(Den("x", Tainted), CstInt(10)) in
+  let result1 = eval expr1 taint_env in
+  assert (match result1 with
+          | Int(15, Tainted) -> true
+          | _ -> false);
+
+  (* Test tainting in conditional expressions *)
+  let expr2 = Ifthenelse(Eq(Den("x", Tainted), CstInt(5)), CstTrue, CstFalse) in
+  let result2 = eval expr2 taint_env in
+  assert (match result2 with
+          | Bool(true, Tainted) -> true
+          | _ -> false);
+
+  (* Test untainted inputs *)
+  let untaint_env = extend_env env ("y", Int(5, Untainted)) in
+  let expr3 = Sum(Den("y", Untainted), CstInt(15)) in
+  let result3 = eval expr3 untaint_env in
+  assert (match result3 with
+          | Int(20, Untainted) -> true
+          | _ -> false);
+
+  print_endline "All tests passed."
+
+(* Run tests *)
+let () = test_taint_propagation ()
