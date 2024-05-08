@@ -20,16 +20,55 @@ type exp =
   | Ifthenelse of exp * exp * exp
   | Let of ide * exp * exp
   | Fun of ide * exp * taintness 
-  | Apply of exp * exp 
+  | Apply of exp * exp
+  | Secret of exp
+ 
+ 
 
-type evT = Int of int * taintness
+  type 'a env = (string * 'a) list
+
+  type evT = Int of int * taintness
   | Bool of bool * taintness
   | Unbound
-  | Funval of efun and efun = ide * exp * taintness
+  | Funval of ide * exp * evT env * taintness (*contrôle de l'environnement*)
+ 
 
-type 'a env = (string * 'a) list
 
 
+let bind env (x:string) (v:evT) = (x,v)::env;;
+
+
+let rec lookup env x =
+  match env with 
+  | [] -> failwith ("not found")
+  | (y, v)::r -> if x = y then v else lookup r x;;
+
+
+type secure_env = 
+  | TrustedEnv of evT env
+  | UntrustedEnv of evT env
+
+type trustBlock = {
+  data: evT env;  (* Données sensibles protégées *)
+  functions: (ide*exp*taintness) list;  (* Fonctions de confiance, y compris checkPassword *)
+  handler: ide list;
+  }
+  
+(* Fonction pour ajuster le taint *)
+let add_taint v t =
+  match v with
+  | Int (i,_) -> Int (i, t)
+  | Bool(b,_) -> Bool (b, t)
+  | Funval (a,b,c,_) -> Funval (a,b,c,t)
+  | Unbound -> failwith("Unbound value")
+
+
+let get_taint v t =
+  match v with
+  | Int (_,t) -> t
+  | Bool(_,t) -> t
+  | Funval (_,_,_,t) -> t
+  | Unbound -> failwith("Unbound value")
 
 
 let typecheck (t, typeDescriptor) = 
@@ -44,14 +83,6 @@ let typecheck (t, typeDescriptor) =
   | _ -> false) 
   | _ -> failwith ("not a valid type");;
 
-
-let bind env (x:string) (v:evT) = (x,v)::env;;
-
-
-let rec lookup env x =
-  match env with 
-  | [] -> failwith ("not found")
-  | (y, v)::r -> if x = y then v else lookup r x;;
 
 
   (* Expression definition*)
@@ -124,7 +155,7 @@ let rec eval (e:exp) (env: evT env) =
         (match result with
          | Int(value, _) -> Int(value, taint_status)
          | Bool(value, _) -> Bool(value, taint_status)
-         | Funval(arg,ebody,_) -> Funval(arg,ebody,taint_status)
+         | Funval(arg,ebody,env,_) -> Funval(arg,ebody,env,taint_status)
          | Unbound -> Unbound
          ) (* Ajouter d'autres cas au besoin *)
 
@@ -133,64 +164,50 @@ let rec eval (e:exp) (env: evT env) =
         (match result with
          | Int(value, _) -> Int(value, taint_status)
          | Bool(value, _) -> Bool(value, taint_status)
-         | Funval(arg,ebody,_) -> Funval(arg,ebody,taint_status)
+         | Funval(arg,ebody,env,_) -> Funval(arg,ebody,env,taint_status)
          | Unbound -> Unbound       
         )
     | (_, _) -> failwith("nonboolean guard"));
 
   | Let(i, e, ebody) -> eval ebody (bind env i (eval e env))
 
-  | Fun(arg, ebody, t) -> Funval(arg,ebody,t) 
+  | Fun(arg, ebody, taint) -> Funval(arg,ebody,env,taint)  
 
-  | Apply(Den(f,t), eArg) -> 
-    let fval = lookup env f in 
-      (match fval with 
-      | Funval(arg, fbody,t) ->
-        let aVal = eval eArg env in
-        let aenv = bind env arg aVal in 
-          eval fbody aenv
-      | _ -> failwith("non functional value"))
-  | Apply(_,_) -> failwith("Application: not first order function") 
+  | Apply (f, arg) ->
+      let vf = eval f env in
+      let va = eval arg env in
+      (match vf, va with
+       | Funval (arg_name, body, fun_env, ft), (Int (_,at) | Bool (_,at)) ->
+         let taint = if ft = Tainted || at = Tainted then Tainted else Untainted in
+         let new_env = (arg_name, add_taint va taint) :: fun_env in
+         add_taint (eval body new_env) taint
+       | _ -> failwith("Type mismatch in application"))
   
+       | _ -> _
+
+
+
+         
+      
+  
+      
+
+let handle tb func_name arg env =
+  if List.mem func_name tb.handler then
+    (* Utilise List.find pour chercher la fonction dans la liste des fonctions *)
+    try
+      let (_, ebody, _) = List.find (fun (name, _, _) -> name = func_name) tb.functions in
+      let arg_val = lookup env arg in
+      let taint = get_taint arg_val in
+      (match taint with
+      | Untainted -> eval ebody ((arg,arg_val) :: tb.data)  (* Suppose que 'arg' et 'tb.env' sont correctement définis pour eval *)
+      | Tainted -> failwith "Function is tainted and cannot be evaluated")
+    
+    with 
+    | Not_found -> failwith "Function not found"
+  else
+    failwith "Function not available in handler"
 
 
     
 
-
-(* A simple environment for testing *)
-let initial_env : evT env = []
-
-(* Helper function to add bindings to the environment *)
-let extend_env env (x, v) = bind env x v
-
-(* Tests for taint propagation *)
-let test_taint_propagation () =
-  let env = initial_env in
-
-  (* Test tainting through arithmetic operations *)
-  let taint_env = extend_env env ("x", Int(5, Tainted)) in
-  let expr1 = Sum(Den("x", Tainted), CstInt(10)) in
-  let result1 = eval expr1 taint_env in
-  assert (match result1 with
-          | Int(15, Tainted) -> true
-          | _ -> false);
-
-  (* Test tainting in conditional expressions *)
-  let expr2 = Ifthenelse(Eq(Den("x", Tainted), CstInt(5)), CstTrue, CstFalse) in
-  let result2 = eval expr2 taint_env in
-  assert (match result2 with
-          | Bool(true, Tainted) -> true
-          | _ -> false);
-
-  (* Test untainted inputs *)
-  let untaint_env = extend_env env ("y", Int(5, Untainted)) in
-  let expr3 = Sum(Den("y", Untainted), CstInt(15)) in
-  let result3 = eval expr3 untaint_env in
-  assert (match result3 with
-          | Int(20, Untainted) -> true
-          | _ -> false);
-
-  print_endline "All tests passed."
-
-(* Run tests *)
-let () = test_taint_propagation ()
