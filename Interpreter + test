@@ -1,10 +1,19 @@
 type taintness =
   | Tainted
   | Untainted
+  | Undetermined
 
 type ide = string 
 
+
+type plug_exp = 
+  | Pfun of ide * plug_exp * plug_exp
+  
+type plugin = ide 
+
+
 type exp = 
+  | Den of ide 
   | CstInt of int 
   | CstTrue 
   | CstFalse 
@@ -16,59 +25,139 @@ type exp =
   | Or of exp * exp
   | And of exp * exp
   | Not of exp
-  | Den of ide * taintness
   | Ifthenelse of exp * exp * exp
   | Let of ide * exp * exp
-  | Fun of ide * exp * taintness 
+  | Fun of ide * exp 
   | Apply of exp * exp
-  | Secret of exp
- 
- 
 
-  type 'a env = (string * 'a) list
+  | Invoke of plugin
+  | Execute of plugin
 
-  type evT = Int of int * taintness
+
+type t_exp =  (*Trusted exp*)
+  | Den of ide 
+  | CstInt of int 
+  | CstTrue    
+  | CstFalse 
+  | Times of t_exp * t_exp
+  | Sum of t_exp * t_exp
+  | Sub of t_exp * t_exp
+  | Eq of t_exp * t_exp
+  | Iszero of t_exp
+  | Or of t_exp * t_exp
+  | And of t_exp * t_exp
+  | Not of t_exp
+  | Ifthenelse of t_exp * t_exp * t_exp
+  | Fun of ide * exp
+
+  | SecretFun of ide * t_exp
+  | SecretLet of ide * t_exp * t_exp
+   
+
+type 'a trusted_env = TrustedEnv of (ide * 'a) list
+type 'a untrusted_env = UntrustedEnv of (ide * 'a) list
+
+
+
+
+type evT = Int of int * taintness
+  | String of string * taintness
   | Bool of bool * taintness
   | Unbound
-  | Funval of ide * exp * evT env * taintness (*contrôle de l'environnement*)
+  | Funval of ide * exp * taintness 
+  | SecretVal of evT
+  | PluginVal of evT
  
-
-
-
-let bind env (x:string) (v:evT) = (x,v)::env;;
-
-
-let rec lookup env x =
-  match env with 
-  | [] -> failwith ("not found")
-  | (y, v)::r -> if x = y then v else lookup r x;;
-
-
-type secure_env = 
-  | TrustedEnv of evT env
-  | UntrustedEnv of evT env
-
-type trustBlock = {
-  data: evT env;  (* Données sensibles protégées *)
-  functions: (ide*exp*taintness) list;  (* Fonctions de confiance, y compris checkPassword *)
-  handler: ide list;
-  }
   
-(* Fonction pour ajuster le taint *)
-let add_taint v t =
-  match v with
-  | Int (i,_) -> Int (i, t)
-  | Bool(b,_) -> Bool (b, t)
-  | Funval (a,b,c,_) -> Funval (a,b,c,t)
-  | Unbound -> failwith("Unbound value")
-
-
-let get_taint v t =
+let get_taint v =
   match v with
   | Int (_,t) -> t
   | Bool(_,t) -> t
-  | Funval (_,_,_,t) -> t
+  | String (_,t) -> t
   | Unbound -> failwith("Unbound value")
+  | _ -> failwith("No taint available")
+
+let bind env (x:string) (v:evT) = 
+  match env with
+  | TrustedEnv -> 
+    let taint = get_taint(v) in
+    (match taint with
+    | Untainted -> TrustedEnv((x,v)::lst)
+    | _ -> failwith("Illegal flow")
+    )
+  | UntrustedEnv lst -> 
+    (match v with
+    | SecretVal(_) -> failwith("Illegal flow")
+    | _ -> UntrustedEnv((x,v)::lst));;
+
+
+let rec lookup env x =
+  match env with
+  | TrustedEnv lst | UntrustedEnv lst ->
+    begin
+      match lst with
+      | [] -> failwith "not found"
+      | (y, v)::r -> if x = y then v else lookup (if match env with TrustedEnv _ -> true | _ -> false then TrustedEnv r else UntrustedEnv r) x
+    end;;
+
+(*type securedEvT = SecretVal of evT
+type securedExp = SecretFun of exp*)
+
+type trustBlock = {
+  data : evT trusted_env;  (* Données sensibles protégées *)
+  functions: t_exp list;  (* Fonctions sensibles *)
+  handle: ide list
+  }
+
+
+
+  
+(*Creation du TrustedBlock*)
+
+(* Vérifier si une valeur evT est Untainted en utilisant get_taint *)
+let is_untainted value =
+  (get_taint value) = Untainted
+
+(* Vérifier que l'expression est de type Fun *)
+let is_fun_type function_exp =
+  match function_exp with
+  | Fun(_, _, Untainted) -> true
+  | SecretFun(_) -> true
+  | _ -> false
+
+(* Fonction pour créer un trustBlock avec des vérifications de taint et de type de fonction *)
+let create_trust_block data functions =
+  let all_untainted = List.for_all (fun (_, v) -> is_untainted v) data in  (* Vérifie que toutes les données sont Untainted *)
+  let all_functions_valid = List.for_all is_fun_type functions in          (* Vérifie que toutes les fonctions sont de type Fun *)
+  if (all_untainted && all_functions_valid) then
+    {data = TrustedEnv(data); functions } (*Intérêt princiâm du block : créer trusted env*)
+  else
+    if not all_untainted then
+      failwith("only Untainted values accepted")
+    else
+      failwith("only functions (Untainted) accepted")
+  
+
+
+
+  
+(* Fonction pour ajuster le taint *)
+let rec add_taint v t =
+  match v with
+    | Int(value, _) -> Int(value, t)
+    | Bool(value, _) -> Bool(value, t)
+    | Funval(ide, result,_) -> Funval(ide, result,t)
+    | String(s, _) -> String(s, t)
+    | Unbound -> Unbound
+    | SecretVal(_) ->   (* only for control flow *)
+        if t = Tainted then 
+            failwith("Illegal flow") 
+        else 
+            v
+    | PluginVal(e) -> add_taint e Tainted
+    
+
+
 
 
 let typecheck (t, typeDescriptor) = 
@@ -81,9 +170,14 @@ let typecheck (t, typeDescriptor) =
   (match typeDescriptor with 
   | Bool(u,_) -> true
   | _ -> false) 
+  | "string" ->
+  (match typeDescriptor with 
+  | String(u,_) -> true
+  | _ -> false) 
+
   | _ -> failwith ("not a valid type");;
 
-
+(* let handle f env = 1 Impossible d'avoir handle sous cette forme : handle a besoin de eval, mais est appelé dans eval*)
 
   (* Expression definition*)
 
@@ -134,7 +228,7 @@ let bool_not b1 =
   
 let rec eval (e:exp) (env: evT env) = 
   match e with
-  | Den (x,t) -> lookup env x
+  | Den x -> lookup env x
   | CstInt(n) -> Int(n,Untainted) 
   | CstTrue -> Bool(true,Untainted) 
   | CstFalse -> Bool(false,Untainted)
@@ -149,65 +243,106 @@ let rec eval (e:exp) (env: evT env) =
 
   | Ifthenelse(cond, e1, e2) ->
     let g = eval cond env in
-    (match (typecheck("bool", g), g) with
-    | (true, Bool(true, taint_status)) -> 
+    (match typecheck("bool", g), g with
+    | true, Bool(true, taint_status) -> 
         let result = eval e1 env in
-        (match result with
-         | Int(value, _) -> Int(value, taint_status)
-         | Bool(value, _) -> Bool(value, taint_status)
-         | Funval(arg,ebody,env,_) -> Funval(arg,ebody,env,taint_status)
-         | Unbound -> Unbound
-         ) (* Ajouter d'autres cas au besoin *)
+        add_taint result taint_status
 
-    | (true, Bool(false, taint_status)) -> 
+    | true, Bool(false, taint_status) -> 
         let result = eval e2 env in
-        (match result with
-         | Int(value, _) -> Int(value, taint_status)
-         | Bool(value, _) -> Bool(value, taint_status)
-         | Funval(arg,ebody,env,_) -> Funval(arg,ebody,env,taint_status)
-         | Unbound -> Unbound       
-        )
-    | (_, _) -> failwith("nonboolean guard"));
+        add_taint result taint_status
 
-  | Let(i, e, ebody) -> eval ebody (bind env i (eval e env))
+    | (_,_ ) -> failwith("nonboolean guard"))
 
-  | Fun(arg, ebody, taint) -> Funval(arg,ebody,env,taint)  
+  | Let(id, e, ebody) -> eval ebody (bind env id (eval e env))
 
-  | Apply (f, arg) ->
-      let vf = eval f env in
-      let va = eval arg env in
-      (match vf, va with
-       | Funval (arg_name, body, fun_env, ft), (Int (_,at) | Bool (_,at)) ->
-         let taint = if ft = Tainted || at = Tainted then Tainted else Untainted in
-         let new_env = (arg_name, add_taint va taint) :: fun_env in
-         add_taint (eval body new_env) taint
-       | _ -> failwith("Type mismatch in application"))
+  | Fun(arg,ebody,t) -> if (t == Tainted) then Funval(arg,ebody,Tainted) 
+  else Funval(arg,ebody,Undetermined) (* taint useless because evaluated in apply according to env*)
+  (* in fact it is usefull because the plug-in are tainted*)
+
+  | SecretFun(f) ->
+    begin match env with
+    | TrustedEnv(_) ->
+        let result = eval f env in    (* traite f comme Fun(arg,ebody,taint) ici *)
+        SecretVal(result)             (* result = Funval *)
+    | UntrustedEnv(_) -> failwith("Illegal flow: Environment is not secured, cannot evaluate")
+    end
+
+
+
+  | Apply(Den(f), eArg) ->  (* eArg type exp car si cest une variable, eval eArg produit un lookup + composabilité : Apply(f, Apply(g,x)) *)
+    let fval = lookup env f in 
+    let aVal = eval eArg env in
+    let taint = get_taint(aVal) in
+    (match fval with 
+    | SecretVal(Funval(arg, fbody,_)) -> (* si f(x) -> x = arg *)
+      if ( (taint == Untainted) || (match aVal with 
+        |SecretVal(_) -> true 
+        | _ -> false) 
+      ) then let aenv = bind env arg aVal in eval fbody aenv
+        else failwith("Illegal flow: try to evaluate tainted arg in Trusted Fun")
+      
+    | Funval(arg,fbody,_) -> (match aVal with
+      | SecretVal(_) -> failwith("Illegal flow: try to evaluate SecretVal with Untrusted Fun")
+      | _ -> let aenv = bind env arg aVal in eval fbody aenv)
+    
+    | _ -> failwith("non functional value"))
+
+  | Apply(_,_) -> failwith("Application: not first order function") 
   
-       | _ -> _
+  | TrustedBlock(data,functions) -> 
+    let evT_data = List.map (fun (id, e) -> (id, eval e)) data in
+    create_trust_block(evT_data,functions)
+  
+  | Invoke(plug) -> 
+    match env with
+    | UntrustedEnv(_) ->
+        let result = eval plug env in
+        (match result with
+         | Funval(arg, fbody, taint) -> PluginVal(Funval(arg, fbody, Tainted))
+         | _ -> failwith "Expected function value from plug-in")
+    | TrustedEnv(_) -> failwith "Illegal flow: cannot evaluate plug-in in secure environment"
 
+
+ 
+  
+  
+
+
+  
 
 
          
       
   
       
+let rec eval (e:t_exp) (env: evT trusted_env) = 
+  match e with
+  | Den x -> lookup env x
+  | CstInt(n) -> Int(n,Untainted) 
+  | CstTrue -> Bool(true,Untainted) 
+  | CstFalse -> Bool(false,Untainted)
+  | Iszero(e1) -> is_zero(eval e1 env)
+  | Eq(e1, e2) -> int_eq((eval e1 env), (eval e2 env))
+  | Times(e1,e2) -> int_times((eval e1 env), (eval e2 env))
+  | Sum(e1, e2) -> int_plus ((eval e1 env), (eval e2 env))
+  | Sub(e1, e2) -> int_sub ((eval e1 env), (eval e2 env))
+  | And(e1, e2) -> bool_and((eval e1 env), (eval e2 env))
+  | Or(e1, e2) -> bool_or ((eval e1 env), (eval e2 env))
+  | Not(e1) -> bool_not(eval e1 env)
 
-let handle tb func_name arg env =
-  if List.mem func_name tb.handler then
-    (* Utilise List.find pour chercher la fonction dans la liste des fonctions *)
-    try
-      let (_, ebody, _) = List.find (fun (name, _, _) -> name = func_name) tb.functions in
-      let arg_val = lookup env arg in
-      let taint = get_taint arg_val in
-      (match taint with
-      | Untainted -> eval ebody ((arg,arg_val) :: tb.data)  (* Suppose que 'arg' et 'tb.env' sont correctement définis pour eval *)
-      | Tainted -> failwith "Function is tainted and cannot be evaluated")
-    
-    with 
-    | Not_found -> failwith "Function not found"
-  else
-    failwith "Function not available in handler"
+  | Ifthenelse(cond, e1, e2) ->
+    let g = eval cond env in
+    (match typecheck("bool", g), g with
+    | true, Bool(true, taint_status) -> 
+        let result = eval e1 env in
+        add_taint result taint_status
 
+    | true, Bool(false, taint_status) -> 
+        let result = eval e2 env in
+        add_taint result taint_status
 
-    
+    | (_,_ ) -> failwith("nonboolean guard"))
+
+  | Let(id, e, ebody) -> eval ebody (bind env id (eval e env))
 
