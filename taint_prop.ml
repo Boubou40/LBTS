@@ -1,27 +1,6 @@
 open Ast
 
-let get_taint v =
-  match v with
-  | Int (_,t) -> t
-  | Bool(_,t) -> t
-  | String (_,t) -> t
-  | Unbound -> failwith("Unbound value")
-  | _ -> failwith("No taint available")
 
-
-  let rec add_taint v t =
-    match v with
-      | Int(value, _) -> Int(value, t)
-      | Bool(value, _) -> Bool(value, t)
-      | Funval(ide, result,_) -> Funval(ide, result,t)
-      | String(s, _) -> String(s, t)
-      | Unbound -> Unbound
-      | SecretVal(_) ->   (* only for control flow *)
-          if t = Tainted then 
-              failwith("Illegal flow") 
-          else 
-              v
-      | PluginVal(e) -> add_taint e Tainted
 
 
 
@@ -47,8 +26,7 @@ let typecheck (t, typeDescriptor) =
   (* Expression definition*)
 
 let is_zero x = match (typecheck("int",x), x) with 
-| (true, Int(y,Tainted)) -> Bool(y=0,Tainted) 
-| (true, Int(y,Untainted)) -> Bool(y=0,Untainted)
+| (true, Int(y,taint)) -> Bool(y=0,taint) 
 | (_, _) -> failwith("run-time error");; 
 
 
