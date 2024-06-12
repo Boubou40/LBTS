@@ -8,9 +8,6 @@ type taintness =
 type ide = string 
 
 
-type trust=
-  | Trusted
-  | Untrusted
 
 
 type exp = 
@@ -33,13 +30,17 @@ type exp =
   | Fun of ide * exp 
   | Apply of exp * exp
 
-  | Block of ide * secret_exp * exp  (* block_name * let(data->fun) * handle *)
+  | SecretLet of ide * exp * exp
+
+  | DecBlock of ide * exp * exp  (* block_name * let(data->fun) * handle *)
   | Handle of ide * ide * exp (* block_name * block_fun * arg*)
+  | EndBlock
+
+  | Include of ide * exp
+  | Exec of exp
 
   | Empty
- 
-and secret_exp = 
-  | Secret_let of ide * exp * exp
+
 
   
 
@@ -55,7 +56,11 @@ type evT = Int of int * taintness
   | Bool of bool * taintness
   | Unbound
   | Funval of ide * exp * taintness 
-  | BlockVal of evT trustBlock
 
+  | Block of evT trustBlock
+
+ 
   | SecretVal of evT
   | PluginVal of evT
+
+  | ExecTermination of evT env (* retourne environnement de l'enclave si évalué correctement*)
